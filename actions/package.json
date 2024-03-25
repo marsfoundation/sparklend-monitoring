@@ -9,7 +9,8 @@
     "dependencies": {
         "@tenderly/actions": "^0.0.8",
         "@types/mocha": "^10.0.6",
-        "hardhat": "^2.19.1"
+        "axios": "^1.6.5",
+        "ethers": "^6.9.2"
     },
     "private": true
 }

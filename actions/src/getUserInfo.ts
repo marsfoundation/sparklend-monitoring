@@ -1,5 +1,4 @@
 import {
-	ActionFn,
 	Context,
 	Event,
 	TransactionEvent,
@@ -11,27 +10,36 @@ import {
 } from './abis'
 
 import {
-    formatBigInt,
+	formatBigInt,
 	sendMessagesToPagerDuty,
-    sendMessagesToSlack,
+	sendMessagesToSlack,
 } from './utils'
 
 const ethers = require('ethers')
 
-export const getUserInfoSparkLend: ActionFn = async (context: Context, event: Event) => {
+const SPARKLEND_POOL = '0xC13e21B648A5Ee794902342038FF3aDAB66BE987'
+const SPARKLEND_HEALTH_CHECKER = '0xfda082e00EF89185d9DB7E5DcD8c5505070F5A3B'
+
+const AAVE_POOL = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
+const AAVE_HEALTH_CHECKER = '0xB75927FbB797d4f568FF782d2B21911015dd52f3'
+
+const getUserInfo = (
+	poolAddress: string,
+	healthCheckerAddress: string,
+	slackWebhookUrl: string,
+	usePagerDuty: boolean,
+) => async (context: Context, event: Event) => {
 	let txEvent = event as TransactionEvent
 
 	// 1. Define contracts
 
-	const POOL_ADDRESS = "0xC13e21B648A5Ee794902342038FF3aDAB66BE987"
-	const HEALTH_CHECKER = "0xfda082e00EF89185d9DB7E5DcD8c5505070F5A3B"
 
-	const pool = new ethers.Contract(POOL_ADDRESS, poolAbi)
+	const pool = new ethers.Contract(poolAddress, poolAbi)
 
 	// 2. Filter events logs to get all pool logs
 
 	const filteredLogs = txEvent.logs.filter(log => {
-		if (log.address !== POOL_ADDRESS) return
+		if (log.address !== poolAddress) return
 
 		try {
 			return pool.interface.parseLog(log)
@@ -46,21 +54,37 @@ export const getUserInfoSparkLend: ActionFn = async (context: Context, event: Ev
 
 	filteredLogs.forEach(log => {
 		const parsedLog = pool.interface.parseLog(log).args
-		if (parsedLog.user) {
-			users.push(parsedLog.user)
+		const userRelatedEventArgs = [
+			'user',
+			'onBehalfOf',
+			'target',
+			'initiator',
+			'liquidator',
+			'repayer',
+			'to',
+		]
+		for (const userType of userRelatedEventArgs) {
+			if (parsedLog[userType]) {
+				console.log(`Checking heath for ${parsedLog[userType]} (${userType})`)
+				users.push(parsedLog[userType])
+			}
 		}
 	})
 
+	console.log(`Checking heath for ${txEvent.from} (tx.from)`)
 	users.push(txEvent.from)
+
 	users = [...new Set(users)]  // Remove duplicates
+	console.log(`Final list of addresses to perform the check on:
+${users.join('\n')}`)
 
 	// 4. Get health of all users
 
 	const url = await context.secrets.get('ETH_RPC_URL')
 
-	const provider = new ethers.providers.JsonRpcProvider(url)
+	const provider = new ethers.JsonRpcProvider(url)
 
-	const healthChecker = new ethers.Contract(HEALTH_CHECKER, sparklendHealthCheckerAbi, provider)
+	const healthChecker = new ethers.Contract(healthCheckerAddress, sparklendHealthCheckerAbi, provider)
 
 	const userHealths = await Promise.all(users.map(async (user) => {
 		return {
@@ -69,7 +93,6 @@ export const getUserInfoSparkLend: ActionFn = async (context: Context, event: Ev
 		}
 	}))
 
-	console.log({users})
 	console.log({userHealths})
 
 	// 5. Filter userHealths to only users below liquidation threshold, exit if none
@@ -81,7 +104,7 @@ export const getUserInfoSparkLend: ActionFn = async (context: Context, event: Ev
 	})
 
 	if (usersBelowLT.length === 0) {
-		console.log("No users below liquidation threshold")
+		console.log('No users below liquidation threshold')
 		return
 	}
 
@@ -93,9 +116,11 @@ export const getUserInfoSparkLend: ActionFn = async (context: Context, event: Ev
 
 	if (messages.length === 0) return
 
-	await sendMessagesToSlack(messages, context, 'SLACK_WEBHOOK_URL')
+	await sendMessagesToSlack(messages, context, slackWebhookUrl)
 
-	await sendMessagesToPagerDuty(messages, context)
+	if (usePagerDuty) {
+		await sendMessagesToPagerDuty(messages, context)
+	}
 }
 
 const formatUserHealthAlertMessage = (userHealth: any, txEvent: TransactionEvent) => {
@@ -122,7 +147,19 @@ Total Collateral: ${formatBigInt(BigInt(userHealth.totalCollateralBase), 8)}
 Total Debt:       ${formatBigInt(BigInt(userHealth.totalDebtBase), 8)}
 LT:               ${formatBigInt(BigInt(userHealth.currentLiquidationThreshold), 2)}%
 LTV:              ${formatBigInt(BigInt(userHealth.ltv), 2)}%
-Health Factor:    ${formatBigInt(BigInt(userHealth.healthFactor), 18)}
-\`\`\`
-	`
+Health Factor:    ${formatBigInt(BigInt(userHealth.healthFactor), 18)}\`\`\``
 }
+
+export const getUserInfoSparkLend = getUserInfo(
+	SPARKLEND_POOL,
+	SPARKLEND_HEALTH_CHECKER,
+	'SPARKLEND_ALERTS_SLACK_WEBHOOK_URL',
+	true,
+)
+
+export const getUserInfoAave = getUserInfo(
+	AAVE_POOL,
+	AAVE_HEALTH_CHECKER,
+	'AAVE_ALERTS_SLACK_WEBHOOK_URL',
+	false,
+	)

@@ -1,94 +1,123 @@
 import {
-	ActionFn,
 	Context,
 	Event,
 	TransactionEvent,
 } from '@tenderly/actions'
 
 import {
+	Contract,
+	LogDescription,
+} from 'ethers'
+
+import {
 	poolAbi,
 	oracleAbi,
-	erc20Abi,
 } from './abis'
 
 import {
-	formatBigInt,
+	AssetsData,
+	aliases,
+	calculateDollarValueInCents,
+	createD3MOutline,
+	createEtherscanTxLink,
+	createGnosisscanTxLink,
+	createPoolStateOutline,
+	createPositionOutlineForUser,
+	createProvider,
+	fetchAllAssetsData,
+	formatAssetAmount,
+	getAddressAlias,
+	getUsersFromParsedLogs,
 	sendMessagesToSlack,
+	shortenAddress,
+	transactionAlreadyProcessed,
 } from './utils'
 
-const ethers = require('ethers')
+import {
+	HIGH_GAS_TRANSACTION_THRESHOLD
+} from './getHighGasTransaction'
 
-export const getProtocolInteractionSparkLend: ActionFn = async (context: Context, event: Event) => {
+const getProtocolInteractionSparkLend = (
+	rpcUrlSecret: string,
+	instanceName: string,
+	poolAddress: string,
+	oracleAddress: string,
+	slackWebhookUrlSecret: string,
+	dollarValueThreshold: number,
+	slackMessagePrefix: string,
+	createTxLink: (hash: string) => string,
+) => async (context: Context, event: Event) => {
 	let txEvent = event as TransactionEvent
 
-	const rpcUrl = await context.secrets.get('ETH_RPC_URL')
-	const provider = new ethers.providers.JsonRpcProvider(rpcUrl)
+	if (await transactionAlreadyProcessed(`getProtocolInteractionSparklend-${instanceName}`, context, txEvent)) return
 
-	const POOL_ADDRESS = "0xC13e21B648A5Ee794902342038FF3aDAB66BE987"
-	const pool = new ethers.Contract(POOL_ADDRESS, poolAbi)
+	const provider = await createProvider(context, rpcUrlSecret)
 
-	const ORACLE_ADDRESS = "0x8105f69D9C41644c6A0803fDA7D03Aa70996cFD9"
-	const oracle = new ethers.Contract(ORACLE_ADDRESS, oracleAbi, provider)
+	const pool = new Contract(poolAddress, poolAbi, provider)
+	const oracle = new Contract(oracleAddress, oracleAbi, provider)
 
-	const filteredParsedPoolLogs = txEvent.logs
-		.filter(log => log.address.toLowerCase() == POOL_ADDRESS.toLowerCase())
+	const preFilteredLogs = txEvent.logs
+		.filter(log => log.address.toLowerCase() == poolAddress.toLowerCase())
 		.map(log => pool.interface.parseLog(log))
-		.filter(log => log.name == 'Supply' || log.name == 'Borrow' || log.name == 'Withdraw' || log.name == 'Repay')
+		.filter(log => log?.name == 'Supply' || log?.name == 'Borrow' || log?.name == 'Withdraw' || log?.name == 'Repay')
 
-	const usedAssets = [...new Set(filteredParsedPoolLogs.map(log=> log.args.reserve))]
+	const users = getUsersFromParsedLogs(preFilteredLogs as LogDescription[])
 
-	const prices = await Promise.all(usedAssets.map(async asset => await oracle.getAssetPrice(asset)))
-	const priceSheet = usedAssets.reduce(( sheet, asset, index ) => ( sheet[asset] = prices[index] , sheet), {})
+	const allAssetsDataForAllUsers: Record<string, AssetsData> = (await Promise.all(users.map(user => fetchAllAssetsData(user, pool, oracle, provider))))
+		.reduce((acc, curr, index) => {return {...acc, [users[index]]: curr}}, {})
 
-	const decimals = await Promise.all(usedAssets.map(async asset => await new ethers.Contract(asset, erc20Abi, provider).decimals()))
-	const decimalsSheet = usedAssets.reduce(( sheet, asset, index ) => ( sheet[asset] = decimals[index] , sheet), {})
+	const slackMessages = preFilteredLogs
+		.filter(log => log && calculateDollarValueInCents(allAssetsDataForAllUsers[log.args.user][log.args.reserve], log.args.amount) > BigInt(dollarValueThreshold * 100)) // value bigger than $1.000.000 in cents
+		.map(log => log && `\`\`\`${slackMessagePrefix}${formatProtocolInteractionAlertMessage(log, txEvent, allAssetsDataForAllUsers[log.args.user], createTxLink)}\`\`\``) as string[]
 
-	const symbols = await Promise.all(usedAssets.map(async asset => await new ethers.Contract(asset, erc20Abi, provider).symbol()))
-	const symbolsSheet = usedAssets.reduce(( sheet, asset, index ) => ( sheet[asset] = symbols[index] , sheet), {})
-
-	const formattedActions = filteredParsedPoolLogs
-		.map(log => ({
-			value: BigInt(log.args.amount) // value in USD cents
-				* BigInt(priceSheet[log.args.reserve])
-				/ BigInt(10 ** decimalsSheet[log.args.reserve])
-				/ BigInt(10 ** 6), // dividing by 10 ** 6, not 10 ** 8 because we want the result in USD cents
-			message: formatProtocolInteractionAlertMessage(
-				log,
-				txEvent,
-				decimalsSheet,
-				priceSheet,
-				symbolsSheet,
-			)
-		}))
-
-
-	console.log(formattedActions.map(action => action.message))
-
-	const filteredActions = formattedActions
-		.filter(action => action.value > BigInt(100000000)) // value bigger than $1.000.000 in cents
-
-	console.log(filteredActions.map(action => action.message))
-
-	await sendMessagesToSlack(filteredActions.map(action => action.message), context, 'SPARKLEND_ALERTS_SLACK_WEBHOOK_URL')
+	await sendMessagesToSlack(slackMessages, context, slackWebhookUrlSecret)
 }
 
-const formatProtocolInteractionAlertMessage = (log: any, txEvent: TransactionEvent, decimalsSheet: any, priceSheet: any, symbolsSheet: any) => {
+const formatProtocolInteractionAlertMessage = (
+	log: LogDescription,
+	txEvent: TransactionEvent,
+	allAssetsData: AssetsData,
+	createTxLink: (hash: string) => string,
+) => {
+	const title = formatInteractionName(log.name)
 	return `
-\`\`\`
-${log.name.toUpperCase()}
+${title}: ${formatAssetAmount(allAssetsData[log.args.reserve], log.args.amount)}
+👨‍💼 USER:${' '.repeat(title.length - 6)}${getAddressAlias(log.args.user) || shortenAddress(log.args.user)}
+🏦 POOL:${' '.repeat(title.length - 6)}${createPoolStateOutline(allAssetsData[log.args.reserve])}
 
-Account ${txEvent.from} performed a ${log.name.toLowerCase()} interaction.
+${getAddressAlias(log.args.user) == aliases.MAKER_CORE_D3M && allAssetsData[log.args.reserve].symbol == 'DAI'
+	? createD3MOutline(allAssetsData[log.args.reserve])
+	: createPositionOutlineForUser(allAssetsData)}
 
-Transaction hash: ${txEvent.hash}
-(https://etherscan.io/tx/${txEvent.hash})
-
-TRANSACTION DETAILS:
-Asset:  ${symbolsSheet[log.args.reserve]} (${log.args.reserve})
-Amount: ${formatBigInt(BigInt(log.args.amount), decimalsSheet[log.args.reserve])} ${symbolsSheet[log.args.reserve]}
-Value:  $${formatBigInt(BigInt(log.args.amount)
-	* BigInt(priceSheet[log.args.reserve])
-	/ BigInt(10 ** decimalsSheet[log.args.reserve])
-	/ BigInt(10 ** 6), 2)}
-\`\`\`
-	`
+${BigInt(txEvent.gasUsed) >= HIGH_GAS_TRANSACTION_THRESHOLD ? '⛽️🔥 HIGH GAS TRANSACTION ⛽️🔥\n' : ''}${createTxLink(txEvent.hash)}`
 }
+
+const formatInteractionName = (name: string) => {
+	if(name == 'Supply') return '💰 SUPPLY'
+	if(name == 'Withdraw') return '💸 WITHDRAW'
+	if(name == 'Borrow') return '📝 BORROW'
+	if(name == 'Repay') return '🤑 REPAY'
+	return ''
+}
+
+export const getProtocolInteractionSparkLendMainnet = getProtocolInteractionSparkLend(
+	'ETH_RPC_URL',
+	'mainnet',
+	'0xC13e21B648A5Ee794902342038FF3aDAB66BE987',
+	'0x8105f69D9C41644c6A0803fDA7D03Aa70996cFD9',
+	'SPARKLEND_INFO_SLACK_WEBHOOK_URL',
+	5000000,
+	'',
+	createEtherscanTxLink
+)
+
+export const getProtocolInteractionSparkLendGnosis = getProtocolInteractionSparkLend(
+	'GNOSIS_RPC_URL',
+	'gnosis',
+	'0x2Dae5307c5E3FD1CF5A72Cb6F698f915860607e0',
+	'0x8105f69D9C41644c6A0803fDA7D03Aa70996cFD9',
+	'SPARKLEND_INFO_GNOSIS_SLACK_WEBHOOK_URL',
+	100000,
+	'🦉 GNOSIS CHAIN 🦉',
+	createGnosisscanTxLink
+)

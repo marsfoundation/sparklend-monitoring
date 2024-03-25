@@ -7,23 +7,45 @@ actions:
     specs:
       monitor-user-health:
         description: Checks user's health factors after they interact with the protocol.
-        function: src/index:getUserInfoSparkLend
+        function: src/getUserInfo:getUserInfoSparkLend
         trigger:
-          type: transaction
-          transaction:
-            status:
-              - mined
-            filters:
-              # Transaction must be from the network with network ID 1 (mainnet)
-              - network: 1
-                # Transaction must have failed
-                status: success
-                # Transaction must have been sent to Pool address
-                to: 0xC13e21B648A5Ee794902342038FF3aDAB66BE987
+          type: alert
+          alert: {}
+
+      monitor-user-health-aave:
+        description: Checks Aave user's health factors after they interact with the protocol.
+        function: src/getUserInfo:getUserInfoAave
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-user-liquidations-sparklend:
+        description: Monitors liquidations in SparkLend protocol
+        function: src/getLiquidationSparkLend:getLiquidationSparkLendMainnet
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-user-liquidations-sparklend-gnosis:
+        description: Monitors liquidations in Gnosis instance SparkLend protocol
+        function: src/getLiquidationSparkLend:getLiquidationSparkLendGnosis
+        trigger:
+          type: alert
+          alert: {}
 
       monitor-asset-liabilities:
         description: Checks asset liability matching for each reserve.
-        function: src/index:getAllReservesAssetLiabilitySparkLend
+        function: src/getAllReservesAssetLiability:getAllReservesAssetLiabilitySparkLend
+        trigger:
+          type: block
+          block:
+            network:
+              - 1
+            blocks: 5
+
+      monitor-asset-liabilities-aave:
+        description: Checks asset liability matching for each reserve in Aave protocol.
+        function: src/getAllReservesAssetLiability:getAllReservesAssetLiabilityAave
         trigger:
           type: block
           block:
@@ -33,13 +55,76 @@ actions:
 
       monitor-protocol-interactions:
         description: Monitors interactions with the Sparklend protocol that involve funds of amounts at least $1.000.000 worth of assets
-        function: src/index:getProtocolInteractionSparkLend
+        function: src/getProtocolInteractionSparkLend:getProtocolInteractionSparkLendMainnet
         trigger:
-          type: transaction
-          transaction:
-            status:
-              - mined
-            filters:
-              - network: 1
-                status: success
-                to: 0xC13e21B648A5Ee794902342038FF3aDAB66BE987
+          type: alert
+          alert: {}
+
+      monitor-protocol-interactions-gnosis:
+        description: Monitors interactions with the Gnosis instance of Sparklend protocol that involve funds of amounts at least $100.000 worth of assets
+        function: src/getProtocolInteractionSparkLend:getProtocolInteractionSparkLendGnosis
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-aave-config-changes:
+        description: Reports changes to the Aave V3 protocol
+        function: src/getConfigurationChangeAave:getConfigurationChangeAave
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-oracle-price-deviance:
+        description: Checks if Spark oracle is not returning prices far different than an off-chain source.
+        function: src/getAssetPriceDeviance:getAssetPriceDeviance
+        trigger:
+          type: block
+          block:
+            network:
+              - 1
+            blocks: 5
+
+      monitor-high-transaction-gas:
+        description: Monitors transactions and alerts on high gas transactions
+        function: src/getHighGasTransaction:getHighGasTransaction
+        trigger:
+          type: alert
+          alert: {}
+
+      clean-transaction-registry:
+        description: Keeps size of the storage in check, by removing transactions older than 100 blocks from the registry.
+        function: src/cleanTransactionRegistry:cleanTransactionRegistry
+        trigger:
+          type: block
+          block:
+            network:
+              - 1
+            blocks: 100
+
+      monitor-lift-on-dschief:
+        description: Monitors lift calls on DS Chief Maker Governance contract
+        function: src/getLiftOnDSChief:getLiftOnDSChief
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-exec-on-spark-proxy:
+        description: Monitors exec calls on Spark Protocol SubProxy contract
+        function: src/getExecOnSparkProxy:getExecOnSparkProxy
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-gnosis-bridge-executor:
+        description: Monitors process of queuing and executing on Gnosis Chain
+        function: src/getGnosisExecutorOperations:getGnosisExecutorOperations
+        trigger:
+          type: alert
+          alert: {}
+
+      monitor-cap-automator-cap-updates:
+        description: Monitors supply and borrow cap updates executed through CapAutomator contract
+        function: src/getCapAutomatorUpdate:getCapAutomatorUpdate
+        trigger:
+          type: alert
+          alert: {}

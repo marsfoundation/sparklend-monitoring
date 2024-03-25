@@ -6,7 +6,7 @@ export const sendMessagesToPagerDuty = async (messages: Array<string>, context: 
 	const deactivatePagerDuty = await context.secrets.get('DEACTIVATE_PAGERDUTY')
 
 	if (deactivatePagerDuty === 'true') {
-		console.log("PagerDuty deactivated")
+		console.log('PagerDuty deactivated')
 		return
 	}
 
@@ -18,7 +18,7 @@ export const sendMessagesToPagerDuty = async (messages: Array<string>, context: 
 
 	const data = {
 	  payload: {
-		summary: "",
+		summary: '',
 		severity: 'critical',
 		source: 'Alert source',
 	  },
